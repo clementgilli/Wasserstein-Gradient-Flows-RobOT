@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 from pykeops.torch import LazyTensor
+import imageio
+import os
 
 
 def sinkhorn_log_keops(x, y, a, b, epsilon, kappa, niter=50, f_init=None, g_init=None):
@@ -73,89 +75,48 @@ def compute_robot_fields(x, y, f, g, a, b, epsilon):
     
     return v_i.float(), w_i.flatten().float()
 
-def wasserstein_flow_fast(x, y, a, b, lr, epsilon, rho, threshold=None):
+def wasserstein_flow(x, y, a, b, lr, epsilon, rho, num_snapshots=60, save_history=True):
     
+    x = x.clone()
     a = a.flatten()
     b = b.flatten()
     
-    colors = (np.cos(10 * x[:, 0].cpu().numpy()) + np.cos(10 * x[:, 1].cpu().numpy()))
-    xxmin, xxmax = min(x[:, 0].min(), y[:, 0].min()).item(), max(x[:, 0].max(), y[:, 0].max()).item()
-    yymin, yymax = min(x[:, 1].min(), y[:, 1].min()).item(), max(x[:, 1].max(), y[:, 1].max()).item()
+    Nsteps = max(int(5.0 / lr), 50)
     
-    display_times = [int(t / lr) for t in [0, 0.25, 0.50, 1.0, 2.0, 5.0]]
-    Nsteps = display_times[-1]
-    
-    plt.figure(figsize=(15, 10))
-    plot_idx = 1
-    t_0 = time.time()
+    frame_indices = np.unique(np.geomspace(1, Nsteps, num=num_snapshots).astype(int))
+    save_frames = set(np.concatenate(([0], frame_indices)))
     
     kappa = rho / (rho + epsilon)
-    
     f = torch.zeros(len(x), device=x.device)
     g = torch.zeros(len(y), device=x.device)
     
-    for i in tqdm(range(Nsteps+1)):
+    history = []
+    
+    for i in tqdm(range(Nsteps + 1)):
         
-        f, g = sinkhorn_log_keops(x, y, a, b, epsilon, kappa, niter=10, f_init=f, g_init=g)
+        f, g = sinkhorn_log_keops(x, y, a, b, epsilon, kappa, niter=5, f_init=f, g_init=g)
+        v, w = compute_robot_fields(x, y, f, g, a, b, epsilon)
         
-        v, w = compute_robot_fields(x, y, f, g, a,b,epsilon)
-        
-        f = f.detach()
-        g = g.detach()
+        f, g = f.detach(), g.detach()
         
         mass_transported = w.view(-1, 1)
         ratio = mass_transported / a.view(-1, 1)
         
-        x_current = x.clone()
-        mass_current = mass_transported.clone()
+        if i in save_frames and save_history:
+            state = {
+                'x': x.detach().cpu().numpy(),
+                'ratio': ratio.flatten().cpu().numpy(),
+                'mass': mass_transported.flatten().cpu().numpy()
+            }
+            history.append(state)
         
-        grad = - ratio * v
-        
-        x = x - lr * grad
-        
-        if i in display_times:
-            ax = plt.subplot(2, 3, plot_idx)
-            plot_idx += 1
-            
-            xi = x_current.detach().cpu().numpy()
-            yi = y.detach().cpu().numpy()
-            mi = mass_current.flatten().cpu().numpy()
-            if threshold:
-                mi = np.where(ratio.flatten().cpu().numpy() < threshold, 0, mi)
-            
-            ax.scatter(yi[:, 0], yi[:, 1], c=[(0.55, 0.55, 0.95)], s=30, label='Target')
-            
-            sizes = 30 * (mi / mi.max())
-            
-            ax.scatter(xi[:, 0], xi[:, 1], c=colors, cmap="hsv", s=sizes, alpha=0.9)
-            
-            ax.set_title(f"t = {i*lr:.2f}", fontsize=12)
-            ax.set_xlim(xxmin - 0.1, xxmax + 0.1)
-            ax.set_ylim(yymin - 0.1, yymax + 0.1)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_aspect('equal')
-
-    plt.tight_layout()
-    plt.show()
+        x = x + lr * ratio * v
     
-    plt.figure(figsize=(8,8))
-    ax = plt.subplot(111)
-    xi = x.detach().cpu().numpy()
-    yi = y.detach().cpu().numpy()
-    ax.scatter(yi[:, 0], yi[:, 1], c=[(0.55, 0.55, 0.95)], s=30, label='Target')
-    ax.scatter(xi[:, 0], xi[:, 1], c=colors, cmap="hsv", s=30, alpha=0.9)
-    ax.set_xlim(xxmin - 0.1, xxmax + 0.1)
-    ax.set_ylim(yymin - 0.1, yymax + 0.1)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    plt.title("Final Result", fontsize=14)
-    plt.show()
-    
-    print(f"Total time: {time.time() - t_0:.2f} seconds")
-    return x
-
+    if save_history:    
+        for i in range(10):
+            history.insert(0,history[0])
+            history.append(history[-1])
+    return x, history
 
 def solve_rigid_closed_form(x, v, w):
     
@@ -229,11 +190,10 @@ def apply_spline_robot(x, v, w, sigma_spline):
     return x + v_smooth
 
 
-def smooth_robot_registration(x, y, a, b, mode='affine', smooth = True, epsilon=0.05, rho=10.0, Nsteps=20):
+def smooth_robot_registration(x, y, a, b, mode='affine', smooth=True, epsilon=0.05, rho=10.0, Nsteps=20, num_snapshots=60, save_history=True):
     
     x_orig = x.contiguous()
     y = y.contiguous()
-    
     a = a.flatten().contiguous()
     b = b.flatten().contiguous()
     
@@ -245,27 +205,19 @@ def smooth_robot_registration(x, y, a, b, mode='affine', smooth = True, epsilon=
     
     kappa = rho / (rho + epsilon)
     
-    display_times = [0,1,2,3,5, Nsteps]
+    frame_indices = np.unique(np.geomspace(1, Nsteps, num=num_snapshots).astype(int))
+    save_frames = set(np.concatenate(([0], frame_indices)))
+    history = []
+    print(save_frames)
     
-    colors = (np.cos(10 * x_orig[:, 0].cpu().numpy()) + np.cos(10 * x_orig[:, 1].cpu().numpy()))
-    
-    xxmin, xxmax = min(x_orig[:, 0].min().item(), y[:, 0].min().item()), max(x_orig[:, 0].max().item(), y[:, 0].max().item())
-    yymin, yymax = min(x_orig[:, 1].min().item(), y[:, 1].min().item()), max(x_orig[:, 1].max().item(), y[:, 1].max().item())
-
-    plt.figure(figsize=(15, 10))
-    plot_idx = 1
-    
-    t0 = time.time()
-    
-    for i in tqdm(range(Nsteps+1)):
+    for i in tqdm(range(Nsteps + 1)):
         
         z = x_orig @ A.t() + h
         
         f, g = sinkhorn_log_keops(z, y, a, b, epsilon, kappa, niter=10, f_init=f, g_init=g)
         v, w = compute_robot_fields(z, y, f, g, a, b, epsilon)
         
-        w_col = w.view(-1, 1) # (N, 1)
-        
+        w_col = w.view(-1, 1)
         target_positions = z + v
         displacement_total = target_positions - x_orig
         
@@ -274,50 +226,37 @@ def smooth_robot_registration(x, y, a, b, mode='affine', smooth = True, epsilon=
         elif mode == 'affine':
             A, h = solve_affine_closed_form(x_orig, displacement_total, w_col)
             
-        if i in display_times:
-            ax = plt.subplot(2, 3, plot_idx)
-            plot_idx += 1
+        if i in save_frames and save_history:
+            mass_transported = w.view(-1, 1)
+            ratio = mass_transported / a.view(-1, 1)
             
-            zi_disp = z.detach().cpu().numpy()
-            yi_disp = y.detach().cpu().numpy()
-            
-            ax.scatter(yi_disp[:, 0], yi_disp[:, 1], c=[(0.55, 0.55, 0.95)], s=30, alpha=0.3, label='Target')
-            
-            sizes = 10
-            ax.scatter(zi_disp[:, 0], zi_disp[:, 1], c=colors, cmap="hsv", s=30, alpha=0.9)
-            
-            det_A = torch.det(A).item()
-            ax.set_title(f"Iter {i}", fontsize=10)
-            ax.set_xlim(xxmin - 0.1, xxmax + 0.1)
-            ax.set_ylim(yymin - 0.1, yymax + 0.1)
-            ax.set_aspect("equal", adjustable="box")
-            ax.set_xticks([])
-            ax.set_yticks([])
+            state = {
+                'x': z.detach().cpu().numpy(),
+                'ratio': ratio.flatten().cpu().numpy(),
+                'mass': mass_transported.flatten().cpu().numpy()
+            }
+            history.append(state)
 
     x_final = x_orig @ A.t() + h
-    plt.tight_layout()
-    plt.show()
     
     if smooth:
-        z = x_orig @ A.t() + h
-        f, g = sinkhorn_log_keops(z, y, a, b, epsilon, kappa, niter=50, f_init=f, g_init=g)
-        v, w = compute_robot_fields(z, y, f, g, a, b, epsilon)
-        x_final = apply_spline_robot(z, v, w, sigma_spline=0.1)
+        
+        f, g = sinkhorn_log_keops(x_final, y, a, b, epsilon, kappa, niter=50, f_init=f, g_init=g)
+        v, w = compute_robot_fields(x_final, y, f, g, a, b, epsilon)
+        
+        x_final = apply_spline_robot(x_final, v, w, sigma_spline=0.1)
+        
+        mass_transported = w.view(-1, 1)
+        ratio = mass_transported / a.view(-1, 1)
+        state = {
+            'x': x_final.detach().cpu().numpy(),
+            'ratio': ratio.flatten().cpu().numpy(),
+            'mass': mass_transported.flatten().cpu().numpy()
+        }
     
-    plt.figure(figsize=(8,8))
-    ax = plt.subplot(111)
-    xi = x_final.detach().cpu().numpy()
-    yi = y.detach().cpu().numpy()
-    ax.scatter(yi[:, 0], yi[:, 1], c=[(0.55, 0.55, 0.95)], s=30, label='Target')
-    ax.scatter(xi[:, 0], xi[:, 1], c=colors, cmap="hsv", s=30, alpha=0.9)
-    ax.set_xlim(xxmin - 0.1, xxmax + 0.1)
-    ax.set_ylim(yymin - 0.1, yymax + 0.1)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    plt.title("Final Registration Result", fontsize=14)
-    plt.show()
+    if save_history:
+        for i in range(5):
+            history.insert(0,history[0])
+            history.append(state)
     
-    print(f"Total time: {time.time() - t0:.2f} seconds")
-    
-    return A, h, x_final
+    return A, h, x_final, history

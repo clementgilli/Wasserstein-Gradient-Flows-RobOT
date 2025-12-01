@@ -3,6 +3,7 @@ from imageio import imread
 from matplotlib import pyplot as plt
 import torch
 import numpy as np
+import imageio
 
 def load_image(fname):
     img = imread(fname, mode="F")  # Grayscale
@@ -29,3 +30,54 @@ def draw_samples(fname, n, dtype=torch.FloatTensor):
 def display_samples(ax, x, color):
     x_ = x.detach().cpu().numpy()
     ax.scatter(x_[0, :], x_[1, :], 25 * 500 / len(x_), color, edgecolors="none")
+    
+
+def render_flow_gif(history, x_orig, y, threshold=None, filename='flow.gif', fps=20):
+    
+    if history is None or len(history) == 0:
+        print("No history to render.")
+        return
+    
+    print(f"Render ({len(history)} frames)...")
+    
+    x_np_orig = x_orig.detach().cpu().numpy()
+    y_np = y.detach().cpu().numpy()
+    
+    colors = np.cos(10 * x_np_orig[:, 0]) + np.cos(10 * x_np_orig[:, 1])
+    
+    xmin = min(x_np_orig[:, 0].min(), y_np[:, 0].min()) - 0.1
+    xmax = max(x_np_orig[:, 0].max(), y_np[:, 0].max()) + 0.1
+    ymin = min(x_np_orig[:, 1].min(), y_np[:, 1].min()) - 0.1
+    ymax = max(x_np_orig[:, 1].max(), y_np[:, 1].max()) + 0.1
+    
+    frames = []
+    
+    for state in history:
+        
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=80)
+        
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        ax.axis('off')
+        ax.set_aspect('equal')
+        
+        # Target
+        ax.scatter(y_np[:, 0], y_np[:, 1], c= [(0.55, 0.55, 0.95)], s=20)
+        
+        # Source
+        sizes = state['mass']
+        if threshold:
+            sizes = np.where(state['ratio'] < threshold, 0, sizes)
+        
+        sizes = 30 * (sizes / (sizes.max() + 1e-6))
+        
+        ax.scatter(state['x'][:, 0], state['x'][:, 1], c=colors, cmap="hsv", s=sizes, alpha=0.8)
+        
+        fig.canvas.draw()
+        image = np.array(fig.canvas.renderer.buffer_rgba())
+        frames.append(image[:, :, :3])
+        
+        plt.close(fig)
+
+    imageio.mimsave(f"./gifs/{filename}", frames, fps=fps, loop=0)
+    print(f"GIF saved : {filename}")
