@@ -31,6 +31,22 @@ def display_samples(ax, x, color):
     x_ = x.detach().cpu().numpy()
     ax.scatter(x_[0, :], x_[1, :], 25 * 500 / len(x_), color, edgecolors="none")
     
+def plot_samples(x,y, colors):
+    plt.scatter(y[:, 0].cpu(), y[:, 1].cpu(), 25, [(0.55, 0.55, 0.95)])
+    plt.scatter(x[:, 0].cpu(), x[:, 1].cpu(), 25, colors, cmap='hsv')
+    #plt.axis([0, 1, 0, 1])
+    plt.gca().set_aspect("equal", adjustable="box")
+    plt.xticks([], [])
+    plt.yticks([], [])
+    plt.tight_layout()
+    
+def affine_transformation(X, theta, scale, translation, noise, device, dtype):
+    translation = torch.tensor(translation, device=device).type(dtype)
+    R = torch.tensor([[np.cos(theta), -np.sin(theta)],
+                      [np.sin(theta),  np.cos(theta)]], device=device).type(dtype)
+    Y = scale * (R @ X.t()).t() + translation
+    Y += noise * torch.randn_like(Y)
+    return Y.contiguous()
 
 def render_flow_gif(history, x_orig, y, threshold=None, filename='flow.gif', fps=20):
     

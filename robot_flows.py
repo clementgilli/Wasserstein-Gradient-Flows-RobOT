@@ -169,10 +169,15 @@ def solve_affine_closed_form(x, v, w):
     
     return A, t
 
-def apply_spline_robot(x, v, w, sigma_spline):
+def apply_spline_robot(x_final, y, a, b, epsilon, rho, sigma_spline):
     
-    x_i = LazyTensor(x[:, None, :])
-    x_j = LazyTensor(x[None, :, :])
+    kappa = rho / (rho + epsilon)
+    
+    f, g = sinkhorn_log_keops(x_final, y, a, b, epsilon, kappa, niter=50)
+    v, w = compute_robot_fields(x_final, y, f, g, a, b, epsilon)
+    
+    x_i = LazyTensor(x_final[:, None, :])
+    x_j = LazyTensor(x_final[None, :, :])
     
     w_j = LazyTensor(w[None, :, None])
     v_j = LazyTensor(v[None, :, :])
@@ -187,10 +192,69 @@ def apply_spline_robot(x, v, w, sigma_spline):
     
     v_smooth = num / (denom + 1e-16)
     
-    return x + v_smooth
+    return x_final + v_smooth
+
+def compute_local_structure(x, k_neighbors=20, sigma_scale=1.0):
+    
+    N, D = x.shape
+    
+    x_i = LazyTensor(x[:, None, :]) 
+    x_j = LazyTensor(x[None, :, :])
+    D2_ij = ((x_i - x_j) ** 2).sum(-1) 
+    
+    knn_indices = D2_ij.argKmin(K=k_neighbors, dim=1)
+    
+    neighbors = x[knn_indices]
+    
+    local_mean = neighbors.mean(dim=1, keepdim=True)
+    centered = neighbors - local_mean
+    
+    cov = torch.matmul(centered.transpose(1, 2), centered) / (k_neighbors - 1)
+    
+    e, v = torch.linalg.eigh(cov)
+    
+    e = torch.clamp(e, min=1e-6) 
+    
+    inv_e = 1.0 / (e * sigma_scale**2)
+    
+    precision_matrix = torch.matmul(v * inv_e.unsqueeze(1), v.transpose(1, 2))
+    
+    return precision_matrix
+
+def apply_anisotropic_spline_robot(x_final, y, a, b, epsilon, rho, sigma_spline):
+    
+    kappa = rho / (rho + epsilon)
+    f, g = sinkhorn_log_keops(x_final, y, a, b, epsilon, kappa, niter=50)
+    v_robot, w = compute_robot_fields(x_final, y, f, g, a, b, epsilon)
+    
+    precision_matrices = compute_local_structure(x_final, k_neighbors=20, sigma_scale=sigma_spline)
+    
+    N, D = x_final.shape
+    P_flat = precision_matrices.view(N, -1)
+    
+    x_i = LazyTensor(x_final[:, None, :])      
+    x_j = LazyTensor(x_final[None, :, :])      
+    
+    P_j = LazyTensor(P_flat[None, :, :])       
+    
+    w_j = LazyTensor(w[None, :, None])        
+    v_j = LazyTensor(v_robot[None, :, :])
+    
+    diff = x_i - x_j 
+    
+    mahalanobis_dist = (diff | P_j.matvecmult(diff))
+    
+    K_ij = (-0.5 * mahalanobis_dist).exp()
+    
+    num = (K_ij * w_j * v_j).sum(1)
+    denom = (K_ij * w_j).sum(1)
+    
+    v_smooth = num / (denom + 1e-16)
+    
+    return x_final + v_smooth
 
 
-def smooth_robot_registration(x, y, a, b, mode='affine', smooth=True, epsilon=0.05, rho=10.0, Nsteps=20, num_snapshots=60, save_history=True):
+def smooth_robot_registration(x, y, a, b, mode='affine', epsilon=0.05, rho=10.0, Nsteps=20, num_snapshots=60, save_history=True):
     
     x_orig = x.contiguous()
     y = y.contiguous()
@@ -239,24 +303,7 @@ def smooth_robot_registration(x, y, a, b, mode='affine', smooth=True, epsilon=0.
 
     x_final = x_orig @ A.t() + h
     
-    if smooth:
-        
-        f, g = sinkhorn_log_keops(x_final, y, a, b, epsilon, kappa, niter=50, f_init=f, g_init=g)
-        v, w = compute_robot_fields(x_final, y, f, g, a, b, epsilon)
-        
-        x_final = apply_spline_robot(x_final, v, w, sigma_spline=0.1)
-        
-        mass_transported = w.view(-1, 1)
-        ratio = mass_transported / a.view(-1, 1)
-        state = {
-            'x': x_final.detach().cpu().numpy(),
-            'ratio': ratio.flatten().cpu().numpy(),
-            'mass': mass_transported.flatten().cpu().numpy()
-        }
-    
-    if save_history:
-        for i in range(5):
-            history.insert(0,history[0])
-            history.append(state)
+    for i in range(5):
+        history.insert(0,history[0])
     
     return A, h, x_final, history
