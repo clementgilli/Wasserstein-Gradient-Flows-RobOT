@@ -62,9 +62,6 @@ def sinkhorn_loss(P, x, y, a, b, epsilon, rho):
 
 def wasserstein_flow(x, y, a, b, lr, epsilon, rho, Nsteps=200, threshold=1e-6, exact_loss = True):
     
-    x = x.T
-    y = y.T
-    
     colors = (np.cos(10 * x[:, 0].numpy()) + np.cos(10 * x[:, 1].numpy()))
     xxmin, xxmax, xymin, xymax = x[:, 0].min(), x[:, 0].max(), x[:, 1].min(), x[:, 1].max()
     ymin, ymax = min(xymin, y[:, 1].min()), max(xymax, y[:, 1].max())

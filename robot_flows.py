@@ -261,8 +261,8 @@ def smooth_robot_registration(x, y, a, b, mode='affine', epsilon=0.05, rho=10.0,
     a = a.flatten().contiguous()
     b = b.flatten().contiguous()
     
-    A = torch.eye(2, dtype=torch.float32, device=x_orig.device)
-    h = torch.zeros(2, dtype=torch.float32, device=x_orig.device)
+    A = torch.eye(x_orig.shape[1], dtype=torch.float32, device=x_orig.device)
+    h = torch.zeros(x_orig.shape[1], dtype=torch.float32, device=x_orig.device)
     
     f = torch.zeros(len(x_orig), device=x_orig.device, dtype=torch.float32)
     g = torch.zeros(len(y), device=x_orig.device, dtype=torch.float32)
@@ -272,7 +272,6 @@ def smooth_robot_registration(x, y, a, b, mode='affine', epsilon=0.05, rho=10.0,
     frame_indices = np.unique(np.geomspace(1, Nsteps, num=num_snapshots).astype(int))
     save_frames = set(np.concatenate(([0], frame_indices)))
     history = []
-    print(save_frames)
     
     for i in tqdm(range(Nsteps + 1)):
         
@@ -305,5 +304,6 @@ def smooth_robot_registration(x, y, a, b, mode='affine', epsilon=0.05, rho=10.0,
     
     for i in range(5):
         history.insert(0,history[0])
+        history.append(history[-1])
     
     return A, h, x_final, history

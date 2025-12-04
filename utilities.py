@@ -97,3 +97,54 @@ def render_flow_gif(history, x_orig, y, threshold=None, filename='flow.gif', fps
 
     imageio.mimsave(f"./gifs/{filename}", frames, fps=fps, loop=0)
     print(f"GIF saved : {filename}")
+    
+    
+def plot_flow(history, x_orig, y, threshold=None, filename='trajectory.png', num_frames=6):
+    
+    if history is None or len(history) == 0:
+        print("Error: No history to plot.")
+        return
+
+    x_np_orig = x_orig.detach().cpu().numpy()
+    y_np = y.detach().cpu().numpy()
+    
+    colors = np.cos(10 * x_np_orig[:, 0]) + np.cos(10 * x_np_orig[:, 1])
+    
+    xmin = min(x_np_orig[:, 0].min(), y_np[:, 0].min()) - 0.1
+    xmax = max(x_np_orig[:, 0].max(), y_np[:, 0].max()) + 0.1
+    ymin = min(x_np_orig[:, 1].min(), y_np[:, 1].min()) - 0.1
+    ymax = max(x_np_orig[:, 1].max(), y_np[:, 1].max()) + 0.1
+    
+    total_steps = len(history) - 1
+    
+    indices = [0, 11, 23, 35, 43, 59]
+    
+    num_plots = len(indices)
+    fig, axes = plt.subplots(2, 3, figsize=(2*num_plots, 6), dpi=100)
+    axes = axes.flatten()
+    if num_plots == 1: axes = [axes]
+    
+    for ax, idx in zip(axes, indices):
+        state = history[idx]
+        
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_aspect('equal')
+        
+        ax.scatter(y_np[:, 0], y_np[:, 1], c=[(0.55, 0.55, 0.95)], s=20, alpha=0.3, label='Target')
+        
+        sizes = state['mass']
+        if threshold:
+            sizes = np.where(state['ratio'] < threshold, 0, sizes)
+        
+        sizes = 30 #* (sizes / (sizes.max() + 1e-6))
+        
+        ax.scatter(state['x'][:, 0], state['x'][:, 1], c=colors, cmap="hsv", s=sizes, alpha=0.9, edgecolors='k', linewidth=0.1)
+        
+        percent = int(idx / total_steps * 100)
+        ax.set_title(f"{percent}%", fontsize=12)
+
+    plt.tight_layout()
+    plt.show()
