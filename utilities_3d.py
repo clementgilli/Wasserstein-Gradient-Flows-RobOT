@@ -7,15 +7,17 @@ from tqdm import tqdm
 
 def read_vtk(path, device='cpu', dtype=torch.float32):
     data = pv.read(path)
-    data_dict = {}
-    data_dict["points"] = data.points.astype(np.float32)
-    data_dict["faces"] = data.faces.reshape(-1, 4)[:, 1:].astype(np.int32)
-    for name in data.array_names:
-        try:
-            data_dict[name] = data[name]
-        except:
-            pass
-    return torch.tensor(data_dict["points"][:, :], device=device).type(dtype)
+    points = data.points.astype(np.float32)
+    points = torch.tensor(points, device=device).type(dtype)
+    
+    try:
+        weigths = data["radius"].astype(np.float32)
+        weigths = torch.tensor(weigths, device=device).type(dtype)
+    except KeyError:
+        N = points.shape[0]
+        weigths = torch.ones((N, 1), device=device).type(dtype) / N
+
+    return points, weigths
 
 def affine_transformation_3d(X, theta_x, theta_y, theta_z, scale, translation, noise, device, dtype):
     translation = torch.tensor(translation, device=device).type(dtype)
@@ -37,51 +39,51 @@ def affine_transformation_3d(X, theta_x, theta_y, theta_z, scale, translation, n
     Y += noise * torch.randn_like(Y)
     return Y.contiguous()
 
-def plot_samples_3d(x, y, colors, point_size=10, opacity_target=0.3):
+def plot_samples_3d(x, y, a, b, scale_factor=1.0):
     
     def to_numpy(data):
-        if torch.is_tensor(data):
-            return data.detach().cpu().numpy()
+        if torch.is_tensor(data): return data.detach().cpu().numpy().flatten()
+        return data.flatten()
+
+    def to_numpy_3d(data):
+        if torch.is_tensor(data): data = data.detach().cpu().numpy()
+        if data.shape[1] == 2: data = np.hstack([data, np.zeros((data.shape[0], 1))])
         return data
 
-    x_np = to_numpy(x)
-    y_np = to_numpy(y)
-    c_np = to_numpy(colors)
-
+    x_np = to_numpy_3d(x)
+    y_np = to_numpy_3d(y)
     
-    if x_np.shape[1] == 2:
-        x_np = np.hstack([x_np, np.zeros((x_np.shape[0], 1))])
-        y_np = np.hstack([y_np, np.zeros((y_np.shape[0], 1))])
+    ra = np.clip(to_numpy(a), 0.1, 5.0)
+    rb = np.clip(to_numpy(b), 0.1, 5.0)
 
-    pl = pv.Plotter(window_size=[500, 400])
+    pl = pv.Plotter(window_size=[1000, 800])
     pl.set_background('white')
+    
+    pl.enable_eye_dome_lighting()  
 
+    cloud_y = pv.PolyData(y_np)
+    cloud_y.point_data['radius'] = rb
+    
+    geom = pv.Sphere(theta_resolution=6, phi_resolution=6)
+    
     pl.add_mesh(
-        pv.PolyData(y_np),
-        color=(0.55, 0.55, 0.95),
-        point_size=point_size,
-        render_points_as_spheres=True,
-        opacity=opacity_target,
-        label='Target'
+        cloud_y.glyph(scale='radius', geom=geom, factor=scale_factor),
+        color='#ff3333',       
+        opacity=0.3,         
+        label='Target (Rouge)'
     )
 
     cloud_x = pv.PolyData(x_np)
-    cloud_x.point_data['scalars'] = c_np
-
+    cloud_x.point_data['radius'] = ra
+    
     pl.add_mesh(
-        cloud_x,
-        scalars='scalars',
-        cmap='hsv',
-        point_size=point_size + 2,
-        render_points_as_spheres=True,
-        opacity=1.0,
-        show_scalar_bar=False,
-        label='Source'
+        cloud_x.glyph(scale='radius', geom=geom, factor=scale_factor),
+        color='#3366ff',       
+        opacity=1.0,           
+        label='Source (Bleu)'
     )
-    
-    pl.add_axes(interactive=True) 
+
     pl.view_isometric()
-    
     pl.show()
 
 def render_flow_gif_3d(history, x_orig, y, threshold=None, filename='flow_3d.gif', points_size=20, opacity_target=0.3, fps=20):
@@ -120,7 +122,7 @@ def render_flow_gif_3d(history, x_orig, y, threshold=None, filename='flow_3d.gif
 
     pl = pv.Plotter(off_screen=True, window_size=[800, 800])
     pl.set_background('white') # Fond blanc propre
-
+    
     pl.add_mesh(pv.PolyData(y_np), color=(0.55, 0.55, 0.95), 
                 point_size=points_size, render_points_as_spheres=True, 
                 opacity=opacity_target,
@@ -170,4 +172,17 @@ def render_flow_gif_3d(history, x_orig, y, threshold=None, filename='flow_3d.gif
         pl.write_frame()
         
     pl.close()
-    print(f"GIF 3D saved : {filepath}")
+    print(f"GIF 3D saved : {filepath}")    
+    
+def save_point_cloud_vtk(x, filename="output.vtk"):
+
+    if torch.is_tensor(x):
+        x = x.detach().cpu().numpy()
+        
+    if x.shape[1] == 2:
+        x = np.hstack([x, np.zeros((x.shape[0], 1))])
+        
+    cloud = pv.PolyData(x)
+    
+    cloud.save(filename)
+    print(f"Saved : {filename}")

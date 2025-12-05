@@ -221,13 +221,71 @@ def compute_local_structure(x, k_neighbors=20, sigma_scale=1.0):
     
     return precision_matrix
 
+
+def compute_local_structure_robust(x, k_neighbors=20, sigma_scale=1.0, batch_size=10000):
+    
+    N, D = x.shape
+    
+    x = x.double()
+    
+    x_i = LazyTensor(x[:, None, :])
+    x_j = LazyTensor(x[None, :, :])
+    D2_ij = ((x_i - x_j) ** 2).sum(-1)
+    
+    knn_indices = D2_ij.argKmin(K=k_neighbors, dim=1)
+    
+    neighbors = x[knn_indices] 
+    local_mean = neighbors.mean(dim=1, keepdim=True)
+    centered = neighbors - local_mean
+    
+    cov = torch.matmul(centered.transpose(1, 2), centered) / (k_neighbors - 1)
+    
+    epsilon_ridge = 1e-6
+    cov.diagonal(dim1=-2, dim2=-1).add_(epsilon_ridge)
+        
+    e_all = []
+    v_all = []
+    
+    with torch.no_grad():
+        for i in range(0, N, batch_size):
+            batch_cov = cov[i : i + batch_size]
+            
+            try:
+                e_batch, v_batch = torch.linalg.eigh(batch_cov)
+            except RuntimeError:
+                print(f"Warning: Batch {i} failed on GPU, switching to CPU fallback.")
+                batch_cov_cpu = batch_cov.cpu()
+                e_batch, v_batch = torch.linalg.eigh(batch_cov_cpu)
+                e_batch = e_batch.to(x.device)
+                v_batch = v_batch.to(x.device)
+            
+            e_all.append(e_batch)
+            v_all.append(v_batch)
+            
+    e = torch.cat(e_all, dim=0)
+    v = torch.cat(v_all, dim=0)
+    e = torch.clamp(e, min=1e-6)
+    
+    inv_e = 1.0 / (e * sigma_scale**2)
+    
+    precision_matrix = torch.matmul(v * inv_e.unsqueeze(1), v.transpose(1, 2))
+    
+    return precision_matrix.float()
+
+
 def apply_anisotropic_spline_robot(x_final, y, a, b, epsilon, rho, sigma_spline):
     
     kappa = rho / (rho + epsilon)
     f, g = sinkhorn_log_keops(x_final, y, a, b, epsilon, kappa, niter=50)
     v_robot, w = compute_robot_fields(x_final, y, f, g, a, b, epsilon)
     
-    precision_matrices = compute_local_structure(x_final, k_neighbors=20, sigma_scale=sigma_spline)
+    #precision_matrices = compute_local_structure(x_final, k_neighbors=20, sigma_scale=sigma_spline)
+    precision_matrices = compute_local_structure_robust(
+        x_final, 
+        k_neighbors=20, 
+        sigma_scale=sigma_spline,
+        batch_size=10000
+    )
     
     N, D = x_final.shape
     P_flat = precision_matrices.view(N, -1)
